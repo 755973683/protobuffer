@@ -2,3 +2,7 @@ message content {
     optional string name = 1;
     repeated int32 code = 2;
 }
+
+message get_info {
+    required content content = 1;
+}
