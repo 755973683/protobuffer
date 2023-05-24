@@ -1,6 +1,6 @@
 message content {
-    optional string name = 1;
-    repeated int32 code = 2;
+    required string name = 1;
+    required string code = 2;
 }
 
 message get_info {
