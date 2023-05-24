@@ -1,5 +1,5 @@
 message content {
-    required string name = 1;
+    required int64 name = 1;
     required string code = 2;
 }
 
