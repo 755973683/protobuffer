@@ -10,8 +10,15 @@
 -ifndef('CONTENT_PB_H').
 -define('CONTENT_PB_H', true).
 -record(content,
-        {name                   :: binary() | iolist() | undefined, % = 1
-         code = []              :: [integer()]      % = 2, 32 bits
+        {name                   :: integer(),       % = 1, 32 bits
+         code                   :: binary() | iolist() % = 2
+        }).
+-endif.
+
+-ifndef('GET_INFO_PB_H').
+-define('GET_INFO_PB_H', true).
+-record(get_info,
+        {content                :: #content{}       % = 1
         }).
 -endif.
 

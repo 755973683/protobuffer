@@ -29,7 +29,8 @@
 
 %% message types
 -type content() :: #content{}.
--export_type(['content'/0]).
+-type get_info() :: #get_info{}.
+-export_type(['content'/0, 'get_info'/0]).
 
 
 -spec encode_msg(_) -> binary().
@@ -44,7 +45,8 @@ encode_msg(Msg, Opts) ->
     end,
     TrUserData = proplists:get_value(user_data, Opts),
     case Msg of
-        #content{} -> e_msg_content(Msg, TrUserData)
+        #content{} -> e_msg_content(Msg, TrUserData);
+        #get_info{} -> e_msg_get_info(Msg, TrUserData)
     end.
 
 
@@ -55,32 +57,39 @@ e_msg_content(Msg, TrUserData) ->
 
 e_msg_content(#content{name = F1, code = F2}, Bin,
               TrUserData) ->
-    B1 = if F1 == undefined -> Bin;
-            true ->
-                begin
-                    TrF1 = id(F1, TrUserData),
-                    e_type_string(TrF1, <<Bin/binary, 10>>)
-                end
+    B1 = begin
+             TrF1 = id(F1, TrUserData),
+             e_type_int64(TrF1, <<Bin/binary, 8>>)
          end,
     begin
         TrF2 = id(F2, TrUserData),
-        if TrF2 == [] -> B1;
-           true -> e_field_content_code(TrF2, B1, TrUserData)
-        end
+        e_type_string(TrF2, <<B1/binary, 18>>)
     end.
 
-e_field_content_code([Elem | Rest], Bin, TrUserData) ->
-    Bin2 = <<Bin/binary, 16>>,
-    Bin3 = e_type_int32(id(Elem, TrUserData), Bin2),
-    e_field_content_code(Rest, Bin3, TrUserData);
-e_field_content_code([], Bin, _TrUserData) -> Bin.
+e_msg_get_info(Msg, TrUserData) ->
+    e_msg_get_info(Msg, <<>>, TrUserData).
+
+
+e_msg_get_info(#get_info{content = F1}, Bin,
+               TrUserData) ->
+    begin
+        TrF1 = id(F1, TrUserData),
+        e_mfield_get_info_content(TrF1,
+                                  <<Bin/binary, 10>>,
+                                  TrUserData)
+    end.
+
+e_mfield_get_info_content(Msg, Bin, TrUserData) ->
+    SubBin = e_msg_content(Msg, <<>>, TrUserData),
+    Bin2 = e_varint(byte_size(SubBin), Bin),
+    <<Bin2/binary, SubBin/binary>>.
 
 
 
-e_type_int32(Value, Bin)
+e_type_int64(Value, Bin)
     when 0 =< Value, Value =< 127 ->
     <<Bin/binary, Value>>;
-e_type_int32(Value, Bin) ->
+e_type_int64(Value, Bin) ->
     <<N:64/unsigned-native>> = <<Value:64/signed-native>>,
     e_varint(N, Bin).
 
@@ -102,7 +111,8 @@ decode_msg(Bin, MsgName) when is_binary(Bin) ->
 decode_msg(Bin, MsgName, Opts) when is_binary(Bin) ->
     TrUserData = proplists:get_value(user_data, Opts),
     case MsgName of
-        content -> d_msg_content(Bin, TrUserData)
+        content -> d_msg_content(Bin, TrUserData);
+        get_info -> d_msg_get_info(Bin, TrUserData)
     end.
 
 
@@ -112,19 +122,17 @@ d_msg_content(Bin, TrUserData) ->
                                0,
                                0,
                                id(undefined, TrUserData),
-                               id([], TrUserData),
+                               id(undefined, TrUserData),
                                TrUserData).
 
-dfp_read_field_def_content(<<10, Rest/binary>>, Z1, Z2,
+dfp_read_field_def_content(<<8, Rest/binary>>, Z1, Z2,
                            F1, F2, TrUserData) ->
     d_field_content_name(Rest, Z1, Z2, F1, F2, TrUserData);
-dfp_read_field_def_content(<<16, Rest/binary>>, Z1, Z2,
+dfp_read_field_def_content(<<18, Rest/binary>>, Z1, Z2,
                            F1, F2, TrUserData) ->
     d_field_content_code(Rest, Z1, Z2, F1, F2, TrUserData);
-dfp_read_field_def_content(<<>>, 0, 0, F1, F2,
-                           TrUserData) ->
-    #content{name = F1,
-             code = lists_reverse(F2, TrUserData)};
+dfp_read_field_def_content(<<>>, 0, 0, F1, F2, _) ->
+    #content{name = F1, code = F2};
 dfp_read_field_def_content(Other, Z1, Z2, F1, F2,
                            TrUserData) ->
     dg_read_field_def_content(Other,
@@ -147,9 +155,9 @@ dg_read_field_def_content(<<0:1, X:7, Rest/binary>>, N,
                           Acc, F1, F2, TrUserData) ->
     Key = X bsl N + Acc,
     case Key of
-        10 ->
+        8 ->
             d_field_content_name(Rest, 0, 0, F1, F2, TrUserData);
-        16 ->
+        18 ->
             d_field_content_code(Rest, 0, 0, F1, F2, TrUserData);
         _ ->
             case Key band 7 of
@@ -166,10 +174,8 @@ dg_read_field_def_content(<<0:1, X:7, Rest/binary>>, N,
                 5 -> skip_32_content(Rest, 0, 0, F1, F2, TrUserData)
             end
     end;
-dg_read_field_def_content(<<>>, 0, 0, F1, F2,
-                          TrUserData) ->
-    #content{name = F1,
-             code = lists_reverse(F2, TrUserData)}.
+dg_read_field_def_content(<<>>, 0, 0, F1, F2, _) ->
+    #content{name = F1, code = F2}.
 
 d_field_content_name(<<1:1, X:7, Rest/binary>>, N, Acc,
                      F1, F2, TrUserData)
@@ -182,10 +188,9 @@ d_field_content_name(<<1:1, X:7, Rest/binary>>, N, Acc,
                          TrUserData);
 d_field_content_name(<<0:1, X:7, Rest/binary>>, N, Acc,
                      _, F2, TrUserData) ->
-    Len = X bsl N + Acc,
-    <<Bytes:Len/binary, Rest2/binary>> = Rest,
-    NewFValue = binary:copy(Bytes),
-    dfp_read_field_def_content(Rest2,
+    <<NewFValue:64/signed-native>> = <<(X bsl N +
+                                            Acc):64/unsigned-native>>,
+    dfp_read_field_def_content(Rest,
                                0,
                                0,
                                NewFValue,
@@ -203,14 +208,15 @@ d_field_content_code(<<1:1, X:7, Rest/binary>>, N, Acc,
                          F2,
                          TrUserData);
 d_field_content_code(<<0:1, X:7, Rest/binary>>, N, Acc,
-                     F1, F2, TrUserData) ->
-    <<NewFValue:32/signed-native>> = <<(X bsl N +
-                                            Acc):32/unsigned-native>>,
-    dfp_read_field_def_content(Rest,
+                     F1, _, TrUserData) ->
+    Len = X bsl N + Acc,
+    <<Bytes:Len/binary, Rest2/binary>> = Rest,
+    NewFValue = binary:copy(Bytes),
+    dfp_read_field_def_content(Rest2,
                                0,
                                0,
                                F1,
-                               cons(NewFValue, F2, TrUserData),
+                               NewFValue,
                                TrUserData).
 
 
@@ -268,6 +274,133 @@ skip_64_content(<<_:64, Rest/binary>>, Z1, Z2, F1, F2,
                                TrUserData).
 
 
+d_msg_get_info(Bin, TrUserData) ->
+    dfp_read_field_def_get_info(Bin,
+                                0,
+                                0,
+                                id(undefined, TrUserData),
+                                TrUserData).
+
+dfp_read_field_def_get_info(<<10, Rest/binary>>, Z1, Z2,
+                            F1, TrUserData) ->
+    d_field_get_info_content(Rest, Z1, Z2, F1, TrUserData);
+dfp_read_field_def_get_info(<<>>, 0, 0, F1, _) ->
+    #get_info{content = F1};
+dfp_read_field_def_get_info(Other, Z1, Z2, F1,
+                            TrUserData) ->
+    dg_read_field_def_get_info(Other,
+                               Z1,
+                               Z2,
+                               F1,
+                               TrUserData).
+
+dg_read_field_def_get_info(<<1:1, X:7, Rest/binary>>, N,
+                           Acc, F1, TrUserData)
+    when N < 32 - 7 ->
+    dg_read_field_def_get_info(Rest,
+                               N + 7,
+                               X bsl N + Acc,
+                               F1,
+                               TrUserData);
+dg_read_field_def_get_info(<<0:1, X:7, Rest/binary>>, N,
+                           Acc, F1, TrUserData) ->
+    Key = X bsl N + Acc,
+    case Key of
+        10 ->
+            d_field_get_info_content(Rest, 0, 0, F1, TrUserData);
+        _ ->
+            case Key band 7 of
+                0 -> skip_varint_get_info(Rest, 0, 0, F1, TrUserData);
+                1 -> skip_64_get_info(Rest, 0, 0, F1, TrUserData);
+                2 ->
+                    skip_length_delimited_get_info(Rest,
+                                                   0,
+                                                   0,
+                                                   F1,
+                                                   TrUserData);
+                5 -> skip_32_get_info(Rest, 0, 0, F1, TrUserData)
+            end
+    end;
+dg_read_field_def_get_info(<<>>, 0, 0, F1, _) ->
+    #get_info{content = F1}.
+
+d_field_get_info_content(<<1:1, X:7, Rest/binary>>, N,
+                         Acc, F1, TrUserData)
+    when N < 57 ->
+    d_field_get_info_content(Rest,
+                             N + 7,
+                             X bsl N + Acc,
+                             F1,
+                             TrUserData);
+d_field_get_info_content(<<0:1, X:7, Rest/binary>>, N,
+                         Acc, F1, TrUserData) ->
+    Len = X bsl N + Acc,
+    <<Bs:Len/binary, Rest2/binary>> = Rest,
+    NewFValue = id(d_msg_content(Bs, TrUserData),
+                   TrUserData),
+    dfp_read_field_def_get_info(Rest2,
+                                0,
+                                0,
+                                if F1 == undefined -> NewFValue;
+                                   true ->
+                                       merge_msg_content(F1,
+                                                         NewFValue,
+                                                         TrUserData)
+                                end,
+                                TrUserData).
+
+
+skip_varint_get_info(<<1:1, _:7, Rest/binary>>, Z1, Z2,
+                     F1, TrUserData) ->
+    skip_varint_get_info(Rest, Z1, Z2, F1, TrUserData);
+skip_varint_get_info(<<0:1, _:7, Rest/binary>>, Z1, Z2,
+                     F1, TrUserData) ->
+    dfp_read_field_def_get_info(Rest,
+                                Z1,
+                                Z2,
+                                F1,
+                                TrUserData).
+
+
+skip_length_delimited_get_info(<<1:1, X:7,
+                                 Rest/binary>>,
+                               N, Acc, F1, TrUserData)
+    when N < 57 ->
+    skip_length_delimited_get_info(Rest,
+                                   N + 7,
+                                   X bsl N + Acc,
+                                   F1,
+                                   TrUserData);
+skip_length_delimited_get_info(<<0:1, X:7,
+                                 Rest/binary>>,
+                               N, Acc, F1, TrUserData) ->
+    Length = X bsl N + Acc,
+    <<_:Length/binary, Rest2/binary>> = Rest,
+    dfp_read_field_def_get_info(Rest2,
+                                0,
+                                0,
+                                F1,
+                                TrUserData).
+
+
+skip_32_get_info(<<_:32, Rest/binary>>, Z1, Z2, F1,
+                 TrUserData) ->
+    dfp_read_field_def_get_info(Rest,
+                                Z1,
+                                Z2,
+                                F1,
+                                TrUserData).
+
+
+skip_64_get_info(<<_:64, Rest/binary>>, Z1, Z2, F1,
+                 TrUserData) ->
+    dfp_read_field_def_get_info(Rest,
+                                Z1,
+                                Z2,
+                                F1,
+                                TrUserData).
+
+
 
 
 
@@ -278,17 +411,22 @@ merge_msgs(Prev, New, Opts)
     when element(1, Prev) =:= element(1, New) ->
     TrUserData = proplists:get_value(user_data, Opts),
     case Prev of
-        #content{} -> merge_msg_content(Prev, New, TrUserData)
+        #content{} -> merge_msg_content(Prev, New, TrUserData);
+        #get_info{} -> merge_msg_get_info(Prev, New, TrUserData)
     end.
 
-merge_msg_content(#content{name = PFname,
-                           code = PFcode},
-                  #content{name = NFname, code = NFcode}, TrUserData) ->
-    #content{name =
-                 if NFname =:= undefined -> PFname;
-                    true -> NFname
-                 end,
-             code = 'erlang_++'(PFcode, NFcode, TrUserData)}.
+merge_msg_content(#content{},
+                  #content{name = NFname, code = NFcode}, _) ->
+    #content{name = NFname, code = NFcode}.
+
+merge_msg_get_info(#get_info{content = PFcontent},
+                   #get_info{content = NFcontent}, TrUserData) ->
+    #get_info{content =
+                  if PFcontent /= undefined, NFcontent /= undefined ->
+                         merge_msg_content(PFcontent, NFcontent, TrUserData);
+                     PFcontent == undefined -> NFcontent;
+                     NFcontent == undefined -> PFcontent
+                  end}.
 
 
 
@@ -298,6 +436,8 @@ verify_msg(Msg, Opts) ->
     TrUserData = proplists:get_value(user_data, Opts),
     case Msg of
         #content{} -> v_msg_content(Msg, [content], TrUserData);
+        #get_info{} ->
+            v_msg_get_info(Msg, [get_info], TrUserData);
         _ -> mk_type_error(not_a_known_message, Msg, [])
     end.
 
@@ -305,27 +445,29 @@ verify_msg(Msg, Opts) ->
 -dialyzer({nowarn_function,v_msg_content/3}).
 v_msg_content(#content{name = F1, code = F2}, Path,
               _) ->
-    if F1 == undefined -> ok;
-       true -> v_type_string(F1, [name | Path])
-    end,
-    if is_list(F2) ->
-           _ = [v_type_int32(Elem, [code | Path]) || Elem <- F2],
-           ok;
-       true ->
-           mk_type_error({invalid_list_of, int32}, F2, Path)
-    end,
+    v_type_int64(F1, [name | Path]),
+    v_type_string(F2, [code | Path]),
+    ok;
+v_msg_content(X, Path, _TrUserData) ->
+    mk_type_error({expected_msg, content}, X, Path).
+
+-dialyzer({nowarn_function,v_msg_get_info/3}).
+v_msg_get_info(#get_info{content = F1}, Path,
+               TrUserData) ->
+    v_msg_content(F1, [content | Path], TrUserData),
     ok.
 
--dialyzer({nowarn_function,v_type_int32/2}).
-v_type_int32(N, _Path)
-    when -2147483648 =< N, N =< 2147483647 ->
+-dialyzer({nowarn_function,v_type_int64/2}).
+v_type_int64(N, _Path)
+    when -9223372036854775808 =< N,
+         N =< 9223372036854775807 ->
     ok;
-v_type_int32(N, Path) when is_integer(N) ->
-    mk_type_error({value_out_of_range, int32, signed, 32},
+v_type_int64(N, Path) when is_integer(N) ->
+    mk_type_error({value_out_of_range, int64, signed, 64},
                   N,
                   Path);
-v_type_int32(X, Path) ->
-    mk_type_error({bad_integer, int32, signed, 32},
+v_type_int64(X, Path) ->
+    mk_type_error({bad_integer, int64, signed, 64},
                   X,
                   Path).
 
@@ -360,25 +502,22 @@ prettify_path(PathR) ->
 -compile({inline,id/2}).
 id(X, _TrUserData) -> X.
 
--compile({inline,cons/3}).
-cons(Elem, Acc, _TrUserData) -> [Elem | Acc].
-
--compile({inline,lists_reverse/2}).
-'lists_reverse'(L, _TrUserData) -> lists:reverse(L).
--compile({inline,'erlang_++'/3}).
-'erlang_++'(A, B, _TrUserData) -> A ++ B.
 
 
 
 get_msg_defs() ->
     [{{msg, content},
-      [#field{name = name, fnum = 1, rnum = 2, type = string,
-              occurrence = optional, opts = []},
-       #field{name = code, fnum = 2, rnum = 3, type = int32,
-              occurrence = repeated, opts = []}]}].
+      [#field{name = name, fnum = 1, rnum = 2, type = int64,
+              occurrence = required, opts = []},
+       #field{name = code, fnum = 2, rnum = 3, type = string,
+              occurrence = required, opts = []}]},
+     {{msg, get_info},
+      [#field{name = content, fnum = 1, rnum = 2,
+              type = {msg, content}, occurrence = required,
+              opts = []}]}].
 
 
-get_msg_names() -> [content].
+get_msg_names() -> [content, get_info].
 
 
 get_enum_names() -> [].
@@ -397,10 +536,14 @@ fetch_enum_def(EnumName) ->
 
 
 find_msg_def(content) ->
-    [#field{name = name, fnum = 1, rnum = 2, type = string,
-            occurrence = optional, opts = []},
-     #field{name = code, fnum = 2, rnum = 3, type = int32,
-            occurrence = repeated, opts = []}];
+    [#field{name = name, fnum = 1, rnum = 2, type = int64,
+            occurrence = required, opts = []},
+     #field{name = code, fnum = 2, rnum = 3, type = string,
+            occurrence = required, opts = []}];
+find_msg_def(get_info) ->
+    [#field{name = content, fnum = 1, rnum = 2,
+            type = {msg, content}, occurrence = required,
+            opts = []}];
 find_msg_def(_) -> error.
 
 
